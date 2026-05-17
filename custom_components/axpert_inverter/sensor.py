@@ -81,6 +81,13 @@ class AxpertSensor(CoordinatorEntity, SensorEntity):
         self._attr_unique_id = f"axpert_{key}"
         self._attr_state_class = SensorStateClass.MEASUREMENT if device_class else None
 
+        if unit in (
+            UnitOfElectricPotential.VOLT,
+            UnitOfElectricCurrent.AMPERE,
+            UnitOfFrequency.HERTZ,
+        ):
+            self._attr_suggested_display_precision = 1
+
     @property
     def native_value(self):
         """Return the state of the sensor."""
