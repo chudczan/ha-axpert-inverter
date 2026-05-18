@@ -432,7 +432,7 @@ class AxpertReactivePowerSensor(AxpertEntity, SensorEntity):
 
     def __init__(self, coordinator):
         super().__init__(coordinator, source_type="calculated")
-        self._attr_native_unit_of_measurement = "var"
+        self._attr_native_unit_of_measurement = "VAR"
         self._attr_device_class = SensorDeviceClass.REACTIVE_POWER
         self._attr_unique_id = "axpert_reactive_power"
         self._attr_state_class = SensorStateClass.MEASUREMENT
