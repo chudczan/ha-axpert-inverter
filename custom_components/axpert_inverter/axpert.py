@@ -91,6 +91,10 @@ class USBConnection:
                 pass
         if self.dev is not None:
             usb.util.dispose_resources(self.dev)
+        self.dev = None
+        self.interface_number = None
+        self.ep_in = None
+        self.ep_out = None
 
     def write(self, data: bytes):
         chunk_size = 8
@@ -146,6 +150,24 @@ class AxpertInverter:
         self._device_path = device_path
         self._lock = threading.Lock()
         self._last_command_time = 0
+        self._usb = None
+
+    def _get_usb(self) -> USBConnection:
+        if self._usb is None or self._usb.dev is None:
+            self._usb = USBConnection(timeout=5000)
+            self._usb.__enter__()
+        return self._usb
+
+    def _close_usb(self):
+        if self._usb is not None:
+            try:
+                self._usb.__exit__(None, None, None)
+            except Exception:
+                pass
+            self._usb = None
+
+    def __del__(self):
+        self._close_usb()
 
     def _get_crc(self, cmd: str | bytes) -> bytes:
         crc = 0
@@ -214,14 +236,14 @@ class AxpertInverter:
 
             for attempt in range(2):
                 try:
-                    with USBConnection(timeout=5000) as ser:
-                        crc = self._get_crc(command)
-                        full_command = command.encode() + crc + b'\r'
-                        _LOGGER.debug("Sending command: %s (%s %r)", command, full_command.hex(), full_command)
-                        ser.reset_input_buffer()
-                        ser.reset_output_buffer()
-                        ser.write(full_command)
-                        response = ser.read_until(b'\r')
+                    ser = self._get_usb()
+                    crc = self._get_crc(command)
+                    full_command = command.encode() + crc + b'\r'
+                    _LOGGER.debug("Sending command: %s (%s %r)", command, full_command.hex(), full_command)
+                    ser.reset_input_buffer()
+                    ser.reset_output_buffer()
+                    ser.write(full_command)
+                    response = ser.read_until(b'\r')
                     if not response:
                         raise Exception("No response from inverter")
                     decoded_response = self._decode_frame(command, response)
@@ -234,6 +256,7 @@ class AxpertInverter:
                     _LOGGER.debug("Response from inverter for %s: %s", command, decoded_response)
                     return decoded_response
                 except Exception as e:
+                    self._close_usb()
                     if attempt == 1:
                         _LOGGER.error("Failed to communicate with inverter after retries: %s", e)
                         raise e
@@ -246,12 +269,6 @@ class AxpertInverter:
         return re.findall(r"-?\d+(?:\.\d+)?|[01]{8,40}", raw)
 
     def _is_vmiii_24v_qpigs(self, parts: list[str]) -> bool:
-        """Detect ESB/VMIII 24V QPIGS frame without grid-voltage field.
-
-        Observed payload example:
-        0.0 000.0 00.0 0000 0000 000 004 26.40 000 100 0024 ...
-        Here index 0 is grid frequency and index 7 is battery voltage.
-        """
         if len(parts) < 20:
             return False
         try:
