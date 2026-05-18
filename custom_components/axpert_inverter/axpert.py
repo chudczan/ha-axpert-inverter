@@ -24,7 +24,6 @@ class USBConnection:
 
         _LOGGER.debug("USB device found: %s", self.dev)
 
-        # Most Axpert USB HID adapters expose interface 0, but keep this dynamic.
         detach_candidates = set()
         try:
             for cfg in self.dev:
@@ -136,6 +135,9 @@ class USBConnection:
                 _LOGGER.debug("USB read error: %s", e)
                 break
 
+        if terminator in res:
+            res = res[:res.index(terminator) + 1]
+
         _LOGGER.debug("USB RX all: %s %r", res.hex(), res)
         return res
 
@@ -188,6 +190,58 @@ class AxpertInverter:
 
         return bytes([high, low])
 
+    def _clean_response(self, command: str, response: bytes) -> bytes:
+        """Trim HID padding and recover a complete Voltronic frame."""
+        if b'\r' in response:
+            response = response[:response.index(b'\r')]
+
+        response = response.replace(b'\x00', b'').strip()
+
+        if b'(' in response:
+            response = response[response.find(b'('):]
+        else:
+            _LOGGER.warning("Response for %s does not contain frame start '(': %s %r", command, response.hex(), response)
+
+        return response
+
+    def _extract_payload(self, command: str, response: bytes) -> bytes:
+        """Validate CRC when possible and return payload without frame marker and CRC."""
+        response = self._clean_response(command, response)
+
+        if response in (b'(ACK', b'ACK'):
+            return b'ACK'
+        if response in (b'(NAK', b'NAK'):
+            return b'NAK'
+
+        if len(response) <= 2:
+            return response.lstrip(b'(')
+
+        valid_chars = set(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 (.-:")
+        std_data = response[:-2]
+        std_crc_received = response[-2:]
+        std_crc_calc = self._get_crc(std_data)
+
+        if std_crc_calc == std_crc_received:
+            return std_data.lstrip(b'(')
+
+        for i in range(len(response) - 2, 0, -1):
+            candidate_data = response[:i]
+            if all(b in valid_chars for b in candidate_data):
+                candidate_crc = response[i:i + 2]
+                if self._get_crc(candidate_data) == candidate_crc:
+                    _LOGGER.debug("Smart CRC scan recovered data for %s. Garbage detected at end of response.", command)
+                    return candidate_data.lstrip(b'(')
+
+        _LOGGER.warning(
+            "CRC mismatch for %s: Recv %s vs Calc %s. Raw=%s %r",
+            command,
+            std_crc_received.hex(),
+            std_crc_calc.hex(),
+            response.hex(),
+            response,
+        )
+        return std_data.lstrip(b'(')
+
     def send_command(self, command: str) -> str:
         """Send a command to the inverter and return the response."""
         with self._lock:
@@ -210,61 +264,22 @@ class AxpertInverter:
                     
                     if not response:
                         raise Exception("No response from inverter")
-    
-                    if response.endswith(b'\r'):
-                        response = response[:-1]
-                    
-                    if response == b'(ACK' or response == b'ACK':
+
+                    payload = self._extract_payload(command, response)
+                    if payload == b'ACK':
                         return 'ACK'
-                    if response == b'(NAK' or response == b'NAK':
+                    if payload == b'NAK':
                         if attempt == 0:
                             _LOGGER.warning("Got NAK for command %s, retrying in 1s...", command)
                             time.sleep(1)
                             continue
                         raise Exception(f"Command \"{command}\" not supported")
 
-                    valid_chars = set(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 (.-:")
-                    
-                    if len(response) > 2:
-                        std_data = response[:-2]
-                        std_crc_received = response[-2:]
-                        std_crc_calc = self._get_crc(std_data)
-                        
-                        if std_crc_calc == std_crc_received:
-                            raw_data = std_data
-                        else:
-                            found_smart = False
-                            for i in range(len(response)-2, 0, -1):
-                                candidate_data = response[:i]
-                                if all(b in valid_chars for b in candidate_data):
-                                    candidate_crc = response[i:i+2]
-                                    if self._get_crc(candidate_data) == candidate_crc:
-                                        _LOGGER.debug("Smart CRC scan recovered data for %s. Garbage detected at end of response.", command)
-                                        raw_data = candidate_data
-                                        found_smart = True
-                                        break
-                                        
-                            if not found_smart:
-                                _LOGGER.warning(
-                                    "CRC mismatch for %s: Recv %s vs Calc %s. Raw=%s %r",
-                                    command,
-                                    std_crc_received.hex(),
-                                    std_crc_calc.hex(),
-                                    response.hex(),
-                                    response,
-                                )
-                                raw_data = std_data
-                    else:
-                        raw_data = response
-
                     try:
-                        decoded_response = raw_data.decode('iso-8859-1', errors='ignore')
+                        decoded_response = payload.decode('iso-8859-1', errors='ignore')
                         decoded_response = decoded_response.replace('\x00', '').strip()
                     except Exception:
-                        decoded_response = raw_data.decode('utf-8', errors='ignore').replace('\x00', '').strip()
-
-                    if '(' in decoded_response:
-                        decoded_response = decoded_response[decoded_response.find('(')+1:]
+                        decoded_response = payload.decode('utf-8', errors='ignore').replace('\x00', '').strip()
 
                     _LOGGER.debug("Response from inverter for %s: %s", command, decoded_response)
                     return decoded_response
