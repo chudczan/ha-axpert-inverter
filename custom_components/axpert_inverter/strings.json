@@ -1,4 +1,32 @@
 {
+    "config": {
+        "step": {
+            "user": {
+                "title": "Configure Axpert Inverter",
+                "data": {
+                    "device_path": "Device Path",
+                    "scan_interval": "Polling Interval (seconds)"
+                }
+            }
+        },
+        "error": {
+            "cannot_connect": "Failed to connect to the inverter"
+        }
+    },
+    "options": {
+        "step": {
+            "init": {
+                "title": "Axpert Inverter Options",
+                "data": {
+                    "device_path": "Device Path",
+                    "scan_interval": "Polling Interval (seconds)"
+                }
+            }
+        },
+        "error": {
+            "cannot_connect": "Failed to connect to the inverter"
+        }
+    },
     "entity": {
         "select": {
             "ac_input_range": {
@@ -24,6 +52,31 @@
                     "solar_and_utility": "Solar + Utility",
                     "only_solar": "Only solar"
                 }
+            },
+            "battery_type": {
+                "name": "Battery Type",
+                "state": {
+                    "agm": "AGM",
+                    "flooded": "Flooded",
+                    "user": "User"
+                }
+            }
+        },
+        "number": {
+            "max_charging_current": {
+                "name": "Max Charging Current"
+            },
+            "max_utility_charging_current": {
+                "name": "Max Utility Charging Current"
+            },
+            "battery_cutoff_voltage": {
+                "name": "Battery Cut-off Voltage"
+            },
+            "battery_bulk_voltage": {
+                "name": "Battery Bulk Voltage"
+            },
+            "battery_float_voltage": {
+                "name": "Battery Float Voltage"
             }
         },
         "sensor": {
@@ -37,9 +90,101 @@
                     "fault": "Fault",
                     "power_saving": "Power Saving"
                 }
+            },
+            "machine_type": {
+                "name": "Machine Type",
+                "state": {
+                    "grid_tie": "Grid Tie",
+                    "off_grid": "Off Grid",
+                    "hybrid": "Hybrid"
+                }
+            },
+            "grid_voltage": {
+                "name": "Grid Voltage"
+            },
+            "grid_frequency": {
+                "name": "Grid Frequency"
+            },
+            "generator_voltage": {
+                "name": "Generator Voltage"
+            },
+            "generator_frequency": {
+                "name": "Generator Frequency"
+            },
+            "grid_current": {
+                "name": "Grid Current"
+            },
+            "generator_current": {
+                "name": "Generator Current"
+            },
+            "grid_power": {
+                "name": "Grid Power"
+            },
+            "generator_power": {
+                "name": "Generator Power"
+            },
+            "grid_energy": {
+                "name": "Grid Energy"
+            },
+            "generator_energy": {
+                "name": "Generator Energy"
+            },
+            "ac_output_voltage": {
+                "name": "Output Voltage"
+            },
+            "ac_output_frequency": {
+                "name": "Output Frequency"
+            },
+            "ac_output_active_power": {
+                "name": "Output Active Power"
+            },
+            "ac_output_apparent_power": {
+                "name": "Output Apparent Power"
+            },
+            "output_load_percent": {
+                "name": "Load Percent"
+            },
+            "battery_voltage": {
+                "name": "Battery Voltage"
+            },
+            "battery_charging_current": {
+                "name": "Battery Charging Current"
+            },
+            "battery_discharge_current": {
+                "name": "Battery Discharging Current"
+            },
+            "battery_capacity": {
+                "name": "Battery Capacity"
+            },
+            "heat_sink_temperature": {
+                "name": "Inverter Temperature"
+            },
+            "pv_input_voltage": {
+                "name": "PV Input Voltage"
+            },
+            "pv_input_current": {
+                "name": "PV Input Current"
+            },
+            "pv_energy": {
+                "name": "PV Energy"
+            },
+            "load_energy": {
+                "name": "Load Energy"
+            },
+            "reactive_power": {
+                "name": "Reactive Power"
+            },
+            "power_factor": {
+                "name": "Power Factor"
+            },
+            "inverter_consumption": {
+                "name": "Inverter Consumption"
             }
         },
         "binary_sensor": {
+            "pv_loss": {
+                "name": "PV Loss"
+            },
             "inverter_fault": {
                 "name": "Inverter Fault"
             },
@@ -79,6 +224,9 @@
             "battery_under_shutdown": {
                 "name": "Battery Under Shutdown"
             },
+            "battery_derating": {
+                "name": "Battery Derating"
+            },
             "over_load": {
                 "name": "Over Load"
             },
@@ -112,14 +260,17 @@
             "pv_voltage_high": {
                 "name": "PV Voltage High"
             },
-            "mppt_overload": {
-                "name": "MPPT Overload"
+            "mppt_overload_fault": {
+                "name": "MPPT Overload Fault"
             },
-            "mppt_over_temperature": {
-                "name": "MPPT Over Temperature"
+            "mppt_overload_warning": {
+                "name": "MPPT Overload Warning"
             },
             "battery_too_low_to_charge": {
                 "name": "Battery Too Low To Charge"
+            },
+            "dc_dc_overcurrent": {
+                "name": "DC-DC Overcurrent"
             }
         }
     }

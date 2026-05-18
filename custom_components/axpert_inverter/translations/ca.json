@@ -1,4 +1,32 @@
 {
+    "config": {
+        "step": {
+            "user": {
+                "title": "Configurar Inversor Axpert",
+                "data": {
+                    "device_path": "Ruta del Dispositiu",
+                    "scan_interval": "Interval d'Actualització (segons)"
+                }
+            }
+        },
+        "error": {
+            "cannot_connect": "No s'ha pogut connectar a l'inversor"
+        }
+    },
+    "options": {
+        "step": {
+            "init": {
+                "title": "Opcions de l'Inversor Axpert",
+                "data": {
+                    "device_path": "Ruta del Dispositiu",
+                    "scan_interval": "Interval d'Actualització (segons)"
+                }
+            }
+        },
+        "error": {
+            "cannot_connect": "No s'ha pogut connectar a l'inversor"
+        }
+    },
     "entity": {
         "select": {
             "ac_input_range": {
@@ -24,6 +52,31 @@
                     "solar_and_utility": "Solar + Xarxa",
                     "only_solar": "Només solar"
                 }
+            },
+            "battery_type": {
+                "name": "Tipus de Bateria",
+                "state": {
+                    "agm": "AGM",
+                    "flooded": "Flooded (Àcid)",
+                    "user": "Usuari"
+                }
+            }
+        },
+        "number": {
+            "max_charging_current": {
+                "name": "Corrent Màxima de Càrrega"
+            },
+            "max_utility_charging_current": {
+                "name": "Corrent Màxima de Càrrega de Xarxa"
+            },
+            "battery_cutoff_voltage": {
+                "name": "Voltatge de Tall de Bateria"
+            },
+            "battery_bulk_voltage": {
+                "name": "Voltatge de Càrrega Bulk (C.V.)"
+            },
+            "battery_float_voltage": {
+                "name": "Voltatge de Càrrega Flotant"
             }
         },
         "sensor": {
@@ -37,10 +90,102 @@
                     "fault": "Fallada",
                     "power_saving": "Estalvi d'Energia"
                 }
+            },
+            "machine_type": {
+                "name": "Tipus de Màquina",
+                "state": {
+                    "grid_tie": "Xarxa (Grid Tie)",
+                    "off_grid": "Aïllada (Off Grid)",
+                    "hybrid": "Híbrid"
+                }
+            },
+            "grid_voltage": {
+                "name": "Voltatge de Xarxa"
+            },
+            "grid_frequency": {
+                "name": "Freqüència de Xarxa"
+            },
+            "generator_voltage": {
+                "name": "Voltatge de Generador"
+            },
+            "generator_frequency": {
+                "name": "Freqüència de Generador"
+            },
+            "grid_current": {
+                "name": "Corrent de Xarxa"
+            },
+            "generator_current": {
+                "name": "Corrent de Generador"
+            },
+            "grid_power": {
+                "name": "Potència de Xarxa"
+            },
+            "generator_power": {
+                "name": "Potència de Generador"
+            },
+            "grid_energy": {
+                "name": "Energia de Xarxa"
+            },
+            "generator_energy": {
+                "name": "Energia de Generador"
+            },
+            "ac_output_voltage": {
+                "name": "Voltatge de Sortida"
+            },
+            "ac_output_frequency": {
+                "name": "Freqüència de Sortida"
+            },
+            "ac_output_active_power": {
+                "name": "Potència Activa de Sortida"
+            },
+            "ac_output_apparent_power": {
+                "name": "Potència Aparent de Sortida"
+            },
+            "output_load_percent": {
+                "name": "Percentatge de Càrrega"
+            },
+            "battery_voltage": {
+                "name": "Voltatge de Bateria"
+            },
+            "battery_charging_current": {
+                "name": "Corrent de Càrrega de Bateria"
+            },
+            "battery_discharge_current": {
+                "name": "Corrent de Descàrrega de Bateria"
+            },
+            "battery_capacity": {
+                "name": "Capacitat de Bateria"
+            },
+            "heat_sink_temperature": {
+                "name": "Temperatura de l'Inversor"
+            },
+            "pv_input_voltage": {
+                "name": "Voltatge d'Entrada PV"
+            },
+            "pv_input_current": {
+                "name": "Corrent d'Entrada PV"
+            },
+            "pv_energy": {
+                "name": "Energia Solar"
+            },
+            "load_energy": {
+                "name": "Energia de Càrrega"
+            },
+            "reactive_power": {
+                "name": "Potència Reactiva"
+            },
+            "power_factor": {
+                "name": "Factor de Potència"
+            },
+            "inverter_consumption": {
+                "name": "Consum de l'Inversor"
             }
         }
     },
     "binary_sensor": {
+        "pv_loss": {
+            "name": "Pèrdua Solar"
+        },
         "inverter_fault": {
             "name": "Fallada de l'Inversor"
         },
@@ -80,6 +225,9 @@
         "battery_under_shutdown": {
             "name": "Apagat per Bateria Baixa"
         },
+        "battery_derating": {
+            "name": "Reducció de Potència de Bateria"
+        },
         "over_load": {
             "name": "Sobrecàrrega"
         },
@@ -113,14 +261,17 @@
         "pv_voltage_high": {
             "name": "Voltatge PV Alt"
         },
-        "mppt_overload": {
-            "name": "Sobrecàrrega MPPT"
+        "mppt_overload_fault": {
+            "name": "Fallada Sobrecàrrega MPPT"
         },
-        "mppt_over_temperature": {
-            "name": "Sobretemperatura MPPT"
+        "mppt_overload_warning": {
+            "name": "Avís Sobrecàrrega MPPT"
         },
         "battery_too_low_to_charge": {
             "name": "Bateria Massa Baixa per Carregar"
+        },
+        "dc_dc_overcurrent": {
+            "name": "Sobrecàrrega Corrent DC-DC"
         }
     }
 }
