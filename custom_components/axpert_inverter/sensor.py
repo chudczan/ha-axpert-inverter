@@ -1,5 +1,6 @@
 from datetime import datetime
 import logging
+import math
 from typing import Optional, Any
 
 from homeassistant.components.sensor import (
@@ -27,6 +28,7 @@ import homeassistant.util.dt as dt_util
 
 from .const import DOMAIN
 from .coordinator import AxpertDataUpdateCoordinator
+from .entity import AxpertEntity
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -39,76 +41,97 @@ async def async_setup_entry(
     coordinator: AxpertDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
     
     entities = [
-        AxpertSensor(coordinator, "grid_voltage", "Grid Voltage", UnitOfElectricPotential.VOLT, SensorDeviceClass.VOLTAGE),
-        AxpertSensor(coordinator, "grid_frequency", "Grid Frequency", UnitOfFrequency.HERTZ, SensorDeviceClass.FREQUENCY),
-        AxpertSensor(coordinator, "ac_output_voltage", "Output Voltage", UnitOfElectricPotential.VOLT, SensorDeviceClass.VOLTAGE),
-        AxpertSensor(coordinator, "ac_output_frequency", "Output Frequency", UnitOfFrequency.HERTZ, SensorDeviceClass.FREQUENCY),
-        AxpertSensor(coordinator, "ac_output_active_power", "Output Active Power", UnitOfPower.WATT, SensorDeviceClass.POWER),
-        AxpertSensor(coordinator, "ac_output_apparent_power", "Output Apparent Power", UnitOfApparentPower.VOLT_AMPERE, SensorDeviceClass.APPARENT_POWER),
-        AxpertSensor(coordinator, "output_load_percent", "Load Percent", PERCENTAGE, None),
-        AxpertSensor(coordinator, "battery_voltage", "Battery Voltage", UnitOfElectricPotential.VOLT, SensorDeviceClass.VOLTAGE),
-        AxpertSensor(coordinator, "battery_charging_current", "Battery Charging Current", UnitOfElectricCurrent.AMPERE, SensorDeviceClass.CURRENT),
-        AxpertSensor(coordinator, "battery_capacity", "Battery Capacity", PERCENTAGE, SensorDeviceClass.BATTERY),
-        AxpertSensor(coordinator, "heat_sink_temperature", "Inverter Temperature", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE),
-        AxpertSensor(coordinator, "pv_input_voltage", "PV Input Voltage", UnitOfElectricPotential.VOLT, SensorDeviceClass.VOLTAGE),
-        AxpertSensor(coordinator, "pv_input_current", "PV Input Current", UnitOfElectricCurrent.AMPERE, SensorDeviceClass.CURRENT),
+        AxpertGridInputSensor(coordinator, "grid_voltage", UnitOfElectricPotential.VOLT, SensorDeviceClass.VOLTAGE),
+        AxpertGridInputSensor(coordinator, "grid_frequency", UnitOfFrequency.HERTZ, SensorDeviceClass.FREQUENCY),
+        AxpertSensor(coordinator, "ac_output_voltage", UnitOfElectricPotential.VOLT, SensorDeviceClass.VOLTAGE),
+        AxpertSensor(coordinator, "ac_output_frequency", UnitOfFrequency.HERTZ, SensorDeviceClass.FREQUENCY),
+        AxpertSensor(coordinator, "ac_output_active_power", UnitOfPower.WATT, SensorDeviceClass.POWER),
+        AxpertSensor(coordinator, "ac_output_apparent_power", UnitOfApparentPower.VOLT_AMPERE, SensorDeviceClass.APPARENT_POWER),
+        AxpertSensor(coordinator, "output_load_percent", PERCENTAGE, None),
+        AxpertSensor(coordinator, "battery_voltage", UnitOfElectricPotential.VOLT, SensorDeviceClass.VOLTAGE),
+        AxpertSensor(coordinator, "battery_charging_current", UnitOfElectricCurrent.AMPERE, SensorDeviceClass.CURRENT),
+        AxpertSensor(coordinator, "battery_discharge_current", UnitOfElectricCurrent.AMPERE, SensorDeviceClass.CURRENT),
+        AxpertSensor(coordinator, "battery_capacity", PERCENTAGE, SensorDeviceClass.BATTERY),
+        AxpertSensor(coordinator, "heat_sink_temperature", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE),
+        AxpertSensor(coordinator, "pv_input_voltage", UnitOfElectricPotential.VOLT, SensorDeviceClass.VOLTAGE),
+        AxpertSensor(coordinator, "pv_input_current", UnitOfElectricCurrent.AMPERE, SensorDeviceClass.CURRENT),
         # Synthetic PV Power Sensor
         AxpertPVSensor(coordinator),
         # Real-time Output Current Sensor (Calculated)
         AxpertOutputCurrentSensor(coordinator),
         # Real-time Grid Current Sensor (Calculated)
         AxpertGridCurrentSensor(coordinator),
+        # Real-time Grid Power Sensor (Calculated)
+        AxpertGridPowerSensor(coordinator),
+        # Inverter Consumption/Loss (Calculated)
+        AxpertInverterLossSensor(coordinator),
         # Inverter Status
         AxpertStatusSensor(coordinator),
+        # Machine Type
+        AxpertMachineTypeSensor(coordinator),
+        # Reactive Power and Power Factor
+        AxpertReactivePowerSensor(coordinator),
+        AxpertPowerFactorSensor(coordinator),
     ]
     
     # Energy Sensors (Integration)
-    entities.append(AxpertEnergySensor(coordinator, "pv_energy", "PV Energy", "pv_power"))
-    entities.append(AxpertEnergySensor(coordinator, "load_energy", "Load Energy", "ac_output_active_power"))
+    entities.append(AxpertEnergySensor(coordinator, "pv_energy", "pv_power"))
+    entities.append(AxpertEnergySensor(coordinator, "load_energy", "ac_output_active_power"))
+    entities.append(AxpertEnergySensor(coordinator, "grid_energy", "grid_power"))
 
     async_add_entities(entities)
 
-class AxpertSensor(CoordinatorEntity, SensorEntity):
+class AxpertSensor(AxpertEntity, SensorEntity):
     """Representation of an Axpert Sensor."""
 
-    def __init__(self, coordinator, key, name, unit, device_class):
+    _attr_has_entity_name = True
+
+    def __init__(self, coordinator, key, unit, device_class):
         """Initialize."""
         super().__init__(coordinator)
         self._key = key
-        self._attr_name = name
+        self._attr_translation_key = key
         self._attr_native_unit_of_measurement = unit
         self._attr_device_class = device_class
         self._attr_unique_id = f"axpert_{key}"
         self._attr_state_class = SensorStateClass.MEASUREMENT if device_class else None
-
-        if unit in (
-            UnitOfElectricPotential.VOLT,
-            UnitOfElectricCurrent.AMPERE,
-            UnitOfFrequency.HERTZ,
-        ):
-            self._attr_suggested_display_precision = 1
 
     @property
     def native_value(self):
         """Return the state of the sensor."""
         return self.coordinator.data.get(self._key)
 
+class AxpertGridInputSensor(AxpertSensor):
+    """Sensor for Grid/Generator Input (Voltage/Frequency)."""
+    
     @property
-    def device_info(self):
-        """Return device information."""
-        return {
-            "identifiers": {(DOMAIN, "axpert_inverter")},
-            "name": "Axpert Inverter",
-            "manufacturer": "Voltronic",
-            "model": "Axpert",
-            "sw_version": self.coordinator.firmware_version,
-        }
+    def translation_key(self):
+        """Return the translation key to use for the entity."""
+        machine_type = self.coordinator.data.get("machine_type", "00")
+        base = "grid"
+        if machine_type == "01":
+            base = "generator"
+            
+        if "voltage" in self._key:
+            return f"{base}_voltage"
+        elif "frequency" in self._key:
+            return f"{base}_frequency"
+        
+        return self._key
 
-class AxpertPVSensor(CoordinatorEntity, SensorEntity):
+    @property
+    def icon(self):
+        """Return the icon of the entity."""
+        machine_type = self.coordinator.data.get("machine_type", "00")
+        if machine_type == "01":
+            return "mdi:generator-portable"
+        return "mdi:transmission-tower"
+
+class AxpertPVSensor(AxpertEntity, SensorEntity):
     """Synthetic sensor for PV Power (V * A)."""
     
     def __init__(self, coordinator):
-        super().__init__(coordinator)
+        super().__init__(coordinator, source_type="calculated")
         self._attr_name = "PV Power"
         self._attr_native_unit_of_measurement = UnitOfPower.WATT
         self._attr_device_class = SensorDeviceClass.POWER
@@ -125,26 +148,17 @@ class AxpertPVSensor(CoordinatorEntity, SensorEntity):
         a = self.coordinator.data.get("pv_input_current", 0)
         return round(float(v) * float(a), 1)
 
-    @property
-    def device_info(self):
-        """Return device information."""
-        return {
-            "identifiers": {(DOMAIN, "axpert_inverter")},
-            "name": "Axpert Inverter",
-            "manufacturer": "Voltronic",
-            "model": "Axpert",
-            "sw_version": self.coordinator.firmware_version,
-        }
-
-class AxpertEnergySensor(CoordinatorEntity, RestoreEntity, SensorEntity):
+class AxpertEnergySensor(AxpertEntity, RestoreEntity, SensorEntity):
     """Sensor that integrates power over time to calculate energy (kWh)."""
     
-    def __init__(self, coordinator, key, name, source_key):
+    _MAX_INTEGRATION_INTERVAL = 300  # 5 minutes in seconds
+
+    def __init__(self, coordinator, key, source_key):
         """Initialize."""
-        super().__init__(coordinator)
+        super().__init__(coordinator, source_type="calculated")
         self._key = key
         self._source_key = source_key
-        self._attr_name = name
+        self._attr_translation_key = key
         self._attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
         self._attr_device_class = SensorDeviceClass.ENERGY
         self._attr_state_class = SensorStateClass.TOTAL_INCREASING
@@ -152,6 +166,26 @@ class AxpertEnergySensor(CoordinatorEntity, RestoreEntity, SensorEntity):
         
         self._state = 0.0
         self._last_update_time = None
+        self._last_power = None
+
+    @property
+    def translation_key(self):
+        """Return the translation key of the entity."""
+        if self._key == "grid_energy":
+            machine_type = self.coordinator.data.get("machine_type", "00")
+            if machine_type == "01":
+                return "generator_energy"
+        return self._attr_translation_key
+
+    @property
+    def icon(self):
+        """Return the icon of the entity."""
+        if self._key == "grid_energy":
+            machine_type = self.coordinator.data.get("machine_type", "00")
+            if machine_type == "01":
+                return "mdi:generator-portable"
+            return "mdi:transmission-tower"
+        return None
 
     async def async_added_to_hass(self):
         """Handle entity which will be added."""
@@ -169,13 +203,8 @@ class AxpertEnergySensor(CoordinatorEntity, RestoreEntity, SensorEntity):
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
         now = dt_util.utcnow()
-        if self._last_update_time is None:
-            self._last_update_time = now
-            return
-
-        time_diff = (now - self._last_update_time).total_seconds() / 3600.0 # Hours
         
-        # Get power value
+        # Get current power value
         current_power = 0.0
         if self._source_key == "pv_power":
             if "pv_charging_power" in self.coordinator.data:
@@ -184,44 +213,68 @@ class AxpertEnergySensor(CoordinatorEntity, RestoreEntity, SensorEntity):
                 v = self.coordinator.data.get("pv_input_voltage", 0)
                 a = self.coordinator.data.get("pv_input_current", 0)
                 current_power = float(v) * float(a)
+        elif self._source_key == "grid_power":
+            try:
+                p_load = float(self.coordinator.data.get("ac_output_active_power", 0))
+                
+                batt_v = float(self.coordinator.data.get("battery_voltage", 0))
+                batt_chg_i = float(self.coordinator.data.get("battery_charging_current", 0))
+                p_charge = batt_v * batt_chg_i
+                
+                batt_dis_i = float(self.coordinator.data.get("battery_discharge_current", 0))
+                p_discharge = batt_v * batt_dis_i
+                
+                pv_v = float(self.coordinator.data.get("pv_input_voltage", 0))
+                pv_i = float(self.coordinator.data.get("pv_input_current", 0))
+                p_pv = pv_v * pv_i
+                
+                current_power = p_load + p_charge - p_discharge - p_pv
+                if current_power < 0:
+                    current_power = 0.0
+            except (ValueError, TypeError):
+                current_power = 0.0
         else:
             current_power = float(self.coordinator.data.get(self._source_key, 0))
-            
-        # Left Riemann Sum: energy += power * time_delta
-        # (Assuming power was constant since last update. Valid for small intervals)
-        # Or Trapezoidal: 0.5 * (prev_power + curr_power) * dt
-        # For simplicity and given noisy polling, Left Sum with current power is "okay", 
-        # but technically we should use previous power for Left Sum, or current for Right Sum.
-        # Let's use simple accumulation of current rate.
+
+        if self._last_update_time is None or self._last_power is None:
+            self._last_update_time = now
+            self._last_power = current_power
+            return
+
+        time_diff_seconds = (now - self._last_update_time).total_seconds()
         
-        added_energy_kwh = (current_power / 1000.0) * time_diff
+        # Gap Detection: specific logic for long outages
+        if time_diff_seconds > self._MAX_INTEGRATION_INTERVAL:
+            _LOGGER.debug(f"Time difference {time_diff_seconds}s > {self._MAX_INTEGRATION_INTERVAL}s. Skipping integration to avoid spikes.")
+            # We skip the integration for this extensive interval, 
+            # effectively assuming 0 energy was processed (or data was lost).
+            # We reset the last tracking points to now.
+            self._last_update_time = now
+            self._last_power = current_power
+            return
+
+        time_diff_hours = time_diff_seconds / 3600.0
+        
+        # Trapezoidal Rule: energy += (prev_power + curr_power) / 2 * time_delta
+        avg_power = (self._last_power + current_power) / 2.0
+        added_energy_kwh = (avg_power / 1000.0) * time_diff_hours
         
         if added_energy_kwh > 0:
             self._state += added_energy_kwh
             
         self._last_update_time = now
+        self._last_power = current_power
         self.async_write_ha_state()
 
     @property
     def native_value(self):
         return round(self._state, 2)
-    
-    @property
-    def device_info(self):
-        """Return device information."""
-        return {
-            "identifiers": {(DOMAIN, "axpert_inverter")},
-            "name": "Axpert Inverter",
-            "manufacturer": "Voltronic",
-            "model": "Axpert",
-            "sw_version": self.coordinator.firmware_version,
-        }
 
-class AxpertOutputCurrentSensor(CoordinatorEntity, SensorEntity):
+class AxpertOutputCurrentSensor(AxpertEntity, SensorEntity):
     """Synthetic sensor for Output Current (Apparent Power / Voltage)."""
     
     def __init__(self, coordinator):
-        super().__init__(coordinator)
+        super().__init__(coordinator, source_type="calculated")
         self._attr_name = "Output Current"
         self._attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
         self._attr_device_class = SensorDeviceClass.CURRENT
@@ -246,32 +299,114 @@ class AxpertOutputCurrentSensor(CoordinatorEntity, SensorEntity):
         except (ValueError, TypeError):
             return 0.0
 
-    @property
-    def device_info(self):
-        """Return device information."""
-        return {
-            "identifiers": {(DOMAIN, "axpert_inverter")},
-            "name": "Axpert Inverter",
-            "manufacturer": "Voltronic",
-            "sw_version": self.coordinator.firmware_version,
-        }
-
-class AxpertGridCurrentSensor(CoordinatorEntity, SensorEntity):
+class AxpertGridCurrentSensor(AxpertEntity, SensorEntity):
     """Synthetic sensor for Real-time Grid Current (Calculated)."""
     
     def __init__(self, coordinator):
-        super().__init__(coordinator)
-        self._attr_name = "Grid Current"
+        super().__init__(coordinator, source_type="calculated")
         self._attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
         self._attr_device_class = SensorDeviceClass.CURRENT
         self._attr_unique_id = "axpert_grid_current"
         self._attr_state_class = SensorStateClass.MEASUREMENT
-        self._attr_icon = "mdi:transmission-tower"
+
+    @property
+    def translation_key(self):
+        """Return the translation key of the entity."""
+        machine_type = self.coordinator.data.get("machine_type", "00")
+        if machine_type == "01":
+            return "generator_current"
+        return "grid_current"
+
+    @property
+    def icon(self):
+        """Return the icon of the entity."""
+        machine_type = self.coordinator.data.get("machine_type", "00")
+        if machine_type == "01":
+            return "mdi:generator-portable"
+        return "mdi:transmission-tower"
 
     @property
     def native_value(self):
         # P_grid = P_load + P_charge - P_discharge - P_pv
-        # I_grid = P_grid / V_grid
+        # But for Current, we need Apparent Power (S).
+        # S_grid = sqrt(P_grid^2 + Q_load^2)
+        # Q_load = sqrt(S_load^2 - P_load^2)
+        
+        try:
+            # Get values (default to 0.0)
+            p_load = float(self.coordinator.data.get("ac_output_active_power", 0))
+            s_load = float(self.coordinator.data.get("ac_output_apparent_power", 0))
+            
+            # Calculate Load Reactive Power (Q)
+            # Ensure safe sqrt
+            q_load_sq = max(0, (s_load ** 2) - (p_load ** 2))
+            q_load = math.sqrt(q_load_sq)
+
+            batt_v = float(self.coordinator.data.get("battery_voltage", 0))
+            batt_chg_i = float(self.coordinator.data.get("battery_charging_current", 0))
+            p_charge = batt_v * batt_chg_i
+            
+            batt_dis_i = float(self.coordinator.data.get("battery_discharge_current", 0))
+            p_discharge = batt_v * batt_dis_i
+            
+            pv_v = float(self.coordinator.data.get("pv_input_voltage", 0))
+            pv_i = float(self.coordinator.data.get("pv_input_current", 0))
+            p_pv = pv_v * pv_i
+            
+            # Active Power Balance
+            p_grid = p_load + p_charge - p_discharge - p_pv
+            
+            # Apparent Power on Grid
+            # Assuming Grid supplies all Q_load
+            s_grid = math.sqrt((p_grid ** 2) + (q_load ** 2))
+            
+            v_grid = float(self.coordinator.data.get("grid_voltage", 0))
+            
+            if v_grid < 10:
+                # No grid
+                return 0.0
+                
+            i_grid = s_grid / v_grid
+            
+            # Clamp to 0 if p_grid is negative (exporting) 
+            # Note: s_grid is always positive. We check p_grid to verify direction.
+            if p_grid < 0:
+                i_grid = 0.0
+                
+            return round(i_grid, 1)
+
+        except (ValueError, TypeError):
+            return 0.0
+
+class AxpertGridPowerSensor(AxpertEntity, SensorEntity):
+    """Synthetic sensor for Real-time Grid Power (Calculated)."""
+    
+    def __init__(self, coordinator):
+        super().__init__(coordinator, source_type="calculated")
+        self._attr_native_unit_of_measurement = UnitOfPower.WATT
+        self._attr_device_class = SensorDeviceClass.POWER
+        self._attr_unique_id = "axpert_grid_power"
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+
+    @property
+    def translation_key(self):
+        """Return the translation key of the entity."""
+        machine_type = self.coordinator.data.get("machine_type", "00")
+        if machine_type == "01":
+            return "generator_power"
+        return "grid_power"
+
+    @property
+    def icon(self):
+        """Return the icon of the entity."""
+        machine_type = self.coordinator.data.get("machine_type", "00")
+        if machine_type == "01":
+            return "mdi:generator-portable"
+        return "mdi:transmission-tower"
+
+    @property
+    def native_value(self):
+        # P_grid = P_load + P_charge - P_discharge - P_pv
         
         try:
             # Get values (default to 0.0)
@@ -290,35 +425,99 @@ class AxpertGridCurrentSensor(CoordinatorEntity, SensorEntity):
             
             p_grid = p_load + p_charge - p_discharge - p_pv
             
-            v_grid = float(self.coordinator.data.get("grid_voltage", 0))
-            
-            if v_grid < 10:
-                # No grid
-                return 0.0
-                
-            i_grid = p_grid / v_grid
-            
             # Clamp to 0 if negative (exporting? or just noise/imprecision)
-            # Some inverters export, but usually Axpert doesn't support grid tie in this mode.
-            if i_grid < 0:
-                i_grid = 0.0
+            if p_grid < 0:
+                p_grid = 0.0
                 
-            return round(i_grid, 1)
+            return round(p_grid, 1)
 
         except (ValueError, TypeError):
             return 0.0
 
-    @property
-    def device_info(self):
-        """Return device information."""
-        return {
-            "identifiers": {(DOMAIN, "axpert_inverter")},
-            "name": "Axpert Inverter",
-            "manufacturer": "Voltronic",
-            "sw_version": self.coordinator.firmware_version,
-        }
+class AxpertInverterLossSensor(AxpertEntity, SensorEntity):
+    """Sensor for Inverter Consumption/Loss (Calculated)."""
+    
+    _attr_has_entity_name = True
+    _attr_translation_key = "inverter_consumption"
 
-class AxpertStatusSensor(CoordinatorEntity, SensorEntity):
+    def __init__(self, coordinator):
+        super().__init__(coordinator, source_type="calculated")
+        self._attr_native_unit_of_measurement = UnitOfPower.WATT
+        self._attr_device_class = SensorDeviceClass.POWER
+        self._attr_unique_id = "axpert_inverter_consumption"
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+
+    @property
+    def native_value(self):
+        # Loss = (P_bat_dis + P_pv) - (P_load + P_bat_chg)
+        # Only valid if calculating from DC side when Grid is not balancing the equation.
+        # But wait, standard P_grid calculation assumes Loss=0.
+        # This sensor attempts to measure loss when Grid is NOT connected (Battery Mode).
+        
+        try:
+            v_grid = float(self.coordinator.data.get("grid_voltage", 0))
+            if v_grid >= 10:
+                # In Line Mode, we can't separate Grid Power from Loss without external meter.
+                # Returning 0 effectively means "Unknown/Assumed 0"
+                return 0.0
+
+            p_load = float(self.coordinator.data.get("ac_output_active_power", 0))
+            
+            batt_v = float(self.coordinator.data.get("battery_voltage", 0))
+            batt_chg_i = float(self.coordinator.data.get("battery_charging_current", 0))
+            p_charge = batt_v * batt_chg_i
+            
+            batt_dis_i = float(self.coordinator.data.get("battery_discharge_current", 0))
+            p_discharge = batt_v * batt_dis_i
+            
+            pv_v = float(self.coordinator.data.get("pv_input_voltage", 0))
+            pv_i = float(self.coordinator.data.get("pv_input_current", 0))
+            p_pv = pv_v * pv_i
+            
+            # Loss = Power In - Power Out
+            # Power In = PV + Battery Discharge
+            # Power Out = Load + Battery Charge
+            
+            p_loss = (p_pv + p_discharge) - (p_load + p_charge)
+            
+            if p_loss < 0:
+                p_loss = 0.0
+                
+            return round(p_loss, 1)
+
+        except (ValueError, TypeError):
+            return 0.0
+
+class AxpertMachineTypeSensor(AxpertEntity, SensorEntity):
+    """Sensor for Machine Type (Enum)."""
+    
+    _attr_has_entity_name = True
+    _attr_translation_key = "machine_type"
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_options = [
+        "grid_tie",
+        "off_grid",
+        "hybrid",
+    ]
+
+    def __init__(self, coordinator):
+        super().__init__(coordinator)
+        self._attr_unique_id = "axpert_machine_type"
+
+    @property
+    def native_value(self):
+        m_type = self.coordinator.data.get("machine_type", "")
+        if m_type == "00":
+            return "grid_tie"
+        elif m_type == "01":
+            return "off_grid"
+        elif m_type == "10":
+            return "hybrid"
+        return None
+
+
+class AxpertStatusSensor(AxpertEntity, SensorEntity):
     """Sensor for Inverter Status (Enum)."""
     
     _attr_has_entity_name = True
@@ -365,11 +564,56 @@ class AxpertStatusSensor(CoordinatorEntity, SensorEntity):
         
         return None
 
+class AxpertReactivePowerSensor(AxpertEntity, SensorEntity):
+    """Synthetic sensor for Reactive Power (VAR)."""
+
+    def __init__(self, coordinator):
+        super().__init__(coordinator, source_type="calculated")
+        self._attr_translation_key = "reactive_power"
+        self._attr_native_unit_of_measurement = "VAR"
+        self._attr_unique_id = "axpert_reactive_power"
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_icon = "mdi:flash-outline"
+
     @property
-    def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, "axpert_inverter")},
-            "name": "Axpert Inverter",
-            "manufacturer": "Voltronic",
-            "sw_version": self.coordinator.firmware_version,
-        }
+    def native_value(self):
+        s = float(self.coordinator.data.get("ac_output_apparent_power", 0))
+        p = float(self.coordinator.data.get("ac_output_active_power", 0))
+        
+        # Q = sqrt(S^2 - P^2)
+        try:
+            # Precision issues might make P > S slightly, causing domain error.
+            val = s**2 - p**2
+            if val < 0: val = 0
+            return round(math.sqrt(val), 1)
+        except (ValueError, TypeError):
+            return 0.0
+
+class AxpertPowerFactorSensor(AxpertEntity, SensorEntity):
+    """Synthetic sensor for Power Factor (%)."""
+
+    def __init__(self, coordinator):
+        super().__init__(coordinator, source_type="calculated")
+        self._attr_translation_key = "power_factor"
+        self._attr_native_unit_of_measurement = PERCENTAGE
+        self._attr_device_class = SensorDeviceClass.POWER_FACTOR
+        self._attr_unique_id = "axpert_power_factor"
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_icon = "mdi:angle-acute"
+
+    @property
+    def native_value(self):
+        s = float(self.coordinator.data.get("ac_output_apparent_power", 0))
+        p = float(self.coordinator.data.get("ac_output_active_power", 0))
+
+        try:
+            if s == 0:
+                return 0.0
+            
+            pf = (p / s) * 100
+            # PF cannot exceed 100% technically but noise might cause it.
+            if pf > 100: pf = 100.0
+            
+            return round(pf, 1)
+        except (ValueError, TypeError):
+            return 0.0
