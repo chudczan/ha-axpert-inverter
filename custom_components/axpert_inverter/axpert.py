@@ -79,7 +79,6 @@ class USBConnection:
         _LOGGER.debug("USB interface: %s", self.interface_number)
         _LOGGER.debug("USB endpoint IN: %s", self.ep_in)
         _LOGGER.debug("USB endpoint OUT: %s", self.ep_out)
-
         if self.ep_out is None:
             _LOGGER.debug("No OUT endpoint found. Will use Control Transfer (SET_REPORT) for writing.")
         return self
@@ -143,8 +142,6 @@ class USBConnection:
         pass
 
 class AxpertInverter:
-    """Class to communicate with the Axpert Inverter via HID."""
-
     def __init__(self, device_path: str):
         self._device_path = device_path
         self._lock = threading.Lock()
@@ -192,8 +189,7 @@ class AxpertInverter:
 
         for data, crc in candidates:
             if self._get_crc(data) == crc:
-                payload = data.lstrip(b'(')
-                return payload.decode('iso-8859-1', errors='ignore').strip()
+                return data.lstrip(b'(').decode('iso-8859-1', errors='ignore').strip()
 
         text = response.lstrip(b'(').decode('iso-8859-1', errors='ignore').replace('\x00', '').strip()
         if command in ("QPIGS", "QPIRI"):
@@ -207,16 +203,7 @@ class AxpertInverter:
         else:
             cleaned = text
 
-        # These devices often return valid telemetry with CRC bytes that cannot be
-        # validated after HID/control-transfer cleanup. Keep this at debug to avoid
-        # flooding HA logs once payload recovery succeeds.
-        _LOGGER.debug(
-            "CRC mismatch for %s, using cleaned payload. Raw=%s %r Clean=%s",
-            command,
-            raw.hex(),
-            raw,
-            cleaned,
-        )
+        _LOGGER.debug("CRC mismatch for %s, using cleaned payload. Raw=%s %r Clean=%s", command, raw.hex(), raw, cleaned)
         return cleaned
 
     def send_command(self, command: str) -> str:
@@ -258,6 +245,24 @@ class AxpertInverter:
     def _numeric_parts(self, raw: str) -> list[str]:
         return re.findall(r"-?\d+(?:\.\d+)?|[01]{8,40}", raw)
 
+    def _is_vmiii_24v_qpigs(self, parts: list[str]) -> bool:
+        """Detect ESB/VMIII 24V QPIGS frame without grid-voltage field.
+
+        Observed payload example:
+        0.0 000.0 00.0 0000 0000 000 004 26.40 000 100 0024 ...
+        Here index 0 is grid frequency and index 7 is battery voltage.
+        """
+        if len(parts) < 20:
+            return False
+        try:
+            first = float(parts[0])
+            battery_candidate = float(parts[7])
+            capacity_candidate = int(float(parts[9]))
+            temp_candidate = int(float(parts[10]))
+            return 0 <= first <= 70 and 18 <= battery_candidate <= 32 and 0 <= capacity_candidate <= 100 and 0 <= temp_candidate <= 100
+        except (ValueError, IndexError):
+            return False
+
     def get_general_status(self) -> dict:
         raw = self.send_command("QPIGS")
         if not raw:
@@ -267,11 +272,33 @@ class AxpertInverter:
             _LOGGER.warning("QPIGS response too short after cleanup: %s | Parts: %s", raw, parts)
             return {}
 
-        if len(parts) >= 20 and "." in parts[7]:
-            _LOGGER.debug("QPIGS VMIII/ESB 24V profile detected. Parts: %s", parts)
-            parts.insert(0, "0.0")
+        vmiii_24v = self._is_vmiii_24v_qpigs(parts)
 
         try:
+            if vmiii_24v:
+                data = {
+                    "grid_voltage": 0.0,
+                    "grid_frequency": float(parts[0]),
+                    "ac_output_voltage": float(parts[1]),
+                    "ac_output_frequency": float(parts[2]),
+                    "ac_output_apparent_power": int(float(parts[3])),
+                    "ac_output_active_power": int(float(parts[4])),
+                    "output_load_percent": int(float(parts[5])),
+                    "bus_voltage": int(float(parts[6])),
+                    "battery_voltage": float(parts[7]),
+                    "battery_charging_current": int(float(parts[8])),
+                    "battery_capacity": int(float(parts[9])),
+                    "heat_sink_temperature": int(float(parts[10])),
+                    "pv_input_current": float(parts[11]),
+                    "pv_input_voltage": float(parts[12]),
+                    "scc_voltage": float(parts[13]),
+                    "battery_discharge_current": int(float(parts[14])),
+                    "status_binary": parts[15],
+                }
+                if len(parts) > 18:
+                    data["pv_charging_power"] = int(float(parts[18]))
+                return data
+
             data = {
                 "grid_voltage": float(parts[0]),
                 "grid_frequency": float(parts[1]),
