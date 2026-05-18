@@ -278,13 +278,24 @@ class AxpertInverter:
                 finally:
                     self._last_command_time = time.time()
 
+    def _normalize_qpigs_parts(self, raw: str) -> list[str]:
+        parts = raw.split()
+        if len(parts) >= 20:
+            try:
+                if "." in parts[7]:
+                    _LOGGER.debug("QPIGS shifted 24V profile detected, inserting missing grid voltage. Raw: %s", raw)
+                    parts.insert(0, "0.0")
+            except IndexError:
+                pass
+        return parts
+
     def get_general_status(self) -> dict:
         """Get general status parameters (QPIGS)."""
         raw = self.send_command("QPIGS")
         if not raw:
              return {}
 
-        parts = raw.split()
+        parts = self._normalize_qpigs_parts(raw)
         if len(parts) < 16:
             _LOGGER.warning(f"QPIGS response too short: {raw}")
             return {}
@@ -311,11 +322,14 @@ class AxpertInverter:
             }
             
             if len(parts) > 19:
-                data["pv_charging_power"] = int(parts[19])
+                try:
+                    data["pv_charging_power"] = int(parts[19])
+                except ValueError:
+                    _LOGGER.debug("Ignoring non-integer pv_charging_power field: %s", parts[19])
             
             return data
         except (ValueError, IndexError) as e:
-            _LOGGER.error(f"Error parsing QPIGS data: {e} | Raw: {raw}")
+            _LOGGER.error(f"Error parsing QPIGS data: {e} | Raw: {raw} | Parts: {parts}")
             return {}
 
     def get_warnings(self) -> str:
@@ -443,58 +457,10 @@ class AxpertInverter:
             return None
 
     def get_model_name(self) -> str | None:
-        """Get Model Name (QGMN)."""
         try:
             raw = self.get_model_id()
             if not raw: return None
             code = raw.replace('(', '').strip()
-            mapping = {
-                "001": "VP-5000",
-                "002": "VM-5000",
-                "003": "VP-3000",
-                "004": "VM-3000",
-                "005": "MKS+-2000-48-LV-LY",
-                "006": "Axpert MLV 3K-24",
-                "007": "Axpert PLV 3K-24",
-                "008": "Axpert MKS 3KP",
-                "009": "Axpert KS 3KP",
-                "010": "Axpert MKS 5KP",
-                "011": "Axpert KS 5KP",
-                "012": "Axpert MKS 4K/5K 64VDC",
-                "013": "Axpert KS 4K/5K 64VDC",
-                "014": "Axpert MKS 4K/5K",
-                "015": "Axpert KS 4K/5K",
-                "016": "ALFA M-5000",
-                "017": "ALFA P-5000",
-                "018": "Axpert Plus Duo/Tri 5KVA",
-                "019": "Axpert EPS 5KW",
-                "020": "Axpert EPS M-5KW",
-                "021": "Axpert EPS 33-5KW",
-                "022": "Axpert MKS II 5KW",
-                "023": "AXPERT KING 5KW",
-                "024": "AXPERT KING 3KW",
-                "025": "APT MKS II 5KW (Feed-in grid)",
-                "026": "Axpert MLV 5KW-48V",
-                "027": "AXPERT VMIII",
-                "028": "APT VMIII 3.2KW (Feed-in grid)",
-                "029": "AXPERT VMII",
-                "030": "Fusion VMII (Feed-in grid)",
-                "031": "Phocos MKS II 5KW",
-                "032": "Axpert MKS Zero LV 0.7KW",
-                "033": "Axpert MKS Zero LV 1.4KW",
-                "034": "Axpert MKS Zero LV 2.6KW",
-                "035": "AXPERT KING 5KW (Energy)",
-                "036": "AXPERT KING 3KW (Energy)",
-                "037": "AXPERT VMIII (Energy)",
-                "038": "Phocos MKS II 5KW (Energy)",
-                "039": "Phocos MKS II 5KW LV",
-                "040": "Axpert SE 3.5K",
-                "041": "Axpert SE 5.5K",
-                "042": "AXPERT MKS III 5KW",
-                "043": "MAX 3.6K",
-                "044": "MAX 7.2K",
-                "045": "MAX 5K LV",
-            }
-            return mapping.get(code, code)
+            return code
         except Exception:
             return None
