@@ -169,12 +169,6 @@ class AxpertInverter:
         return bytes([high, low])
 
     def _decode_frame(self, command: str, response: bytes) -> str:
-        """Decode Voltronic HID response into clean payload text.
-
-        HID reports may contain NUL padding after CR. Some devices/log paths may also
-        lose the leading '(' in CRC fallback; for telemetry we recover the payload
-        without treating binary CRC bytes as fields.
-        """
         raw = response
         if b'\r' in response:
             response = response[:response.index(b'\r')]
@@ -199,15 +193,11 @@ class AxpertInverter:
         for data, crc in candidates:
             if self._get_crc(data) == crc:
                 payload = data.lstrip(b'(')
-                decoded = payload.decode('iso-8859-1', errors='ignore').strip()
-                _LOGGER.debug("CRC ok for %s", command)
-                return decoded
+                return payload.decode('iso-8859-1', errors='ignore').strip()
 
-        # CRC fallback: strip only known binary tail after the last ASCII field.
         text = response.lstrip(b'(').decode('iso-8859-1', errors='ignore').replace('\x00', '').strip()
         if command in ("QPIGS", "QPIRI"):
             matches = re.findall(r"[-A-Za-z0-9:.]+", text)
-            # Drop short garbage token after the final expected numeric field when CRC is decoded as text.
             if matches and len(matches[-1]) <= 2 and not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", matches[-1]):
                 matches = matches[:-1]
             cleaned = " ".join(matches)
@@ -217,7 +207,10 @@ class AxpertInverter:
         else:
             cleaned = text
 
-        _LOGGER.warning(
+        # These devices often return valid telemetry with CRC bytes that cannot be
+        # validated after HID/control-transfer cleanup. Keep this at debug to avoid
+        # flooding HA logs once payload recovery succeeds.
+        _LOGGER.debug(
             "CRC mismatch for %s, using cleaned payload. Raw=%s %r Clean=%s",
             command,
             raw.hex(),
@@ -274,7 +267,6 @@ class AxpertInverter:
             _LOGGER.warning("QPIGS response too short after cleanup: %s | Parts: %s", raw, parts)
             return {}
 
-        # VMIII/ESB 24V frame observed here starts with grid frequency, not grid voltage.
         if len(parts) >= 20 and "." in parts[7]:
             _LOGGER.debug("QPIGS VMIII/ESB 24V profile detected. Parts: %s", parts)
             parts.insert(0, "0.0")
