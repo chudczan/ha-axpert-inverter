@@ -13,6 +13,7 @@ class USBConnection:
         self.pid = pid
         self.timeout = timeout
         self.dev = None
+        self.interface_number = None
         self.ep_in = None
         self.ep_out = None
 
@@ -21,126 +22,132 @@ class USBConnection:
         if self.dev is None:
             raise ValueError(f"Device {hex(self.vid)}:{hex(self.pid)} not found")
 
-        # Helper to detach kernel driver for interface 0 (the main HID interface)
-        if self.dev.is_kernel_driver_active(0):
-            try:
-                self.dev.detach_kernel_driver(0)
-                _LOGGER.debug("Detached kernel driver from interface 0")
-            except usb.core.USBError as e:
-                _LOGGER.warning(f"Could not detach kernel driver: {e}")
+        _LOGGER.debug("USB device found: %s", self.dev)
 
-        # Set configuration
+        # Most Axpert USB HID adapters expose interface 0, but keep this dynamic.
+        detach_candidates = set()
+        try:
+            for cfg in self.dev:
+                for intf in cfg:
+                    detach_candidates.add(intf.bInterfaceNumber)
+        except Exception:
+            detach_candidates.add(0)
+
+        for intf_num in sorted(detach_candidates or {0}):
+            try:
+                if self.dev.is_kernel_driver_active(intf_num):
+                    self.dev.detach_kernel_driver(intf_num)
+                    _LOGGER.debug("Detached kernel driver from interface %s", intf_num)
+            except (NotImplementedError, usb.core.USBError) as e:
+                _LOGGER.debug("Kernel driver detach check failed for interface %s: %s", intf_num, e)
+
         try:
             self.dev.set_configuration()
         except usb.core.USBError as e:
-            if e.errno == 16: # Resource busy
-                 # If we are already configured, this might happen and be okay
-                 _LOGGER.debug("Device busy during set_configuration, assuming already configured.")
+            if e.errno == 16:
+                _LOGGER.debug("Device busy during set_configuration, assuming already configured.")
             else:
-                 _LOGGER.warning(f"Could not set configuration: {e}")
+                _LOGGER.warning("Could not set configuration: %s", e)
 
-        # Explicitly claim interface 0
+        cfg = self.dev.get_active_configuration()
+        for intf in cfg:
+            ep_in = None
+            ep_out = None
+            for ep in intf:
+                direction = usb.util.endpoint_direction(ep.bEndpointAddress)
+                if direction == usb.util.ENDPOINT_IN:
+                    ep_in = ep
+                elif direction == usb.util.ENDPOINT_OUT:
+                    ep_out = ep
+
+            if ep_in is not None:
+                self.interface_number = intf.bInterfaceNumber
+                self.ep_in = ep_in
+                self.ep_out = ep_out
+                break
+
+        if self.ep_in is None or self.interface_number is None:
+            _LOGGER.error("Could not find IN endpoint. Active configuration: %s", cfg)
+            raise ValueError("Could not find IN endpoint")
+
         try:
-            usb.util.claim_interface(self.dev, 0)
+            usb.util.claim_interface(self.dev, self.interface_number)
+            _LOGGER.debug("Claimed USB interface %s", self.interface_number)
         except usb.core.USBError as e:
-            _LOGGER.error(f"Could not claim interface 0: {e}")
+            _LOGGER.error("Could not claim interface %s: %s", self.interface_number, e)
             raise e
 
-        # Iterate over all configurations/interfaces/endpoints to find the first valid pair
-        cfg = self.dev.get_active_configuration()
-        
-        for intf in cfg:
-            for ep in intf:
-                if usb.util.endpoint_direction(ep.bEndpointAddress) == usb.util.ENDPOINT_OUT:
-                    if self.ep_out is None: 
-                        self.ep_out = ep
-                elif usb.util.endpoint_direction(ep.bEndpointAddress) == usb.util.ENDPOINT_IN:
-                    if self.ep_in is None: 
-                        self.ep_in = ep
-            
-            if self.ep_out and self.ep_in:
-                break
-        
-        if not self.ep_in:
-            _LOGGER.error(f"Could not find IN endpoint. Configuration: {cfg}")
-            raise ValueError("Could not find IN endpoint")
-            
-        if not self.ep_out:
+        _LOGGER.debug("USB interface: %s", self.interface_number)
+        _LOGGER.debug("USB endpoint IN: %s", self.ep_in)
+        _LOGGER.debug("USB endpoint OUT: %s", self.ep_out)
+
+        if self.ep_out is None:
             _LOGGER.debug("No OUT endpoint found. Will use Control Transfer (SET_REPORT) for writing.")
-        
+
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        try:
-            usb.util.release_interface(self.dev, 0)
-        except Exception:
-            pass
-        # Attach kernel driver back
+        if self.dev is not None and self.interface_number is not None:
+            try:
+                usb.util.release_interface(self.dev, self.interface_number)
+            except Exception:
+                pass
         if self.dev is not None:
             usb.util.dispose_resources(self.dev)
 
     def write(self, data: bytes):
         if self.ep_out:
-            # Use Interrrupt OUT
             chunk_size = 8
-            offset = 0
-            while offset < len(data):
-                chunk = data[offset:offset+chunk_size]
+            for offset in range(0, len(data), chunk_size):
+                chunk = data[offset:offset + chunk_size]
+                _LOGGER.debug("USB TX packet: %s %r", chunk.hex(), chunk)
                 self.ep_out.write(chunk, self.timeout)
-                offset += chunk_size
-                time.sleep(0.01)
+                time.sleep(0.02)
         else:
-            # Use Control Transfer (HID SET_REPORT)
-            # bmRequestType: 0x21 (Host to Device | Class | Interface)
-            # bRequest: 0x09 (SET_REPORT)
-            # wValue: (0x02 << 8) | 0x00 (Output Report, ID 0)
-            # wIndex: 0 (Interface 0)
             chunk_size = 8
-            offset = 0
-            while offset < len(data):
-                chunk = data[offset:offset+chunk_size]
-                # Pad to 8 bytes if needed? Some reports require fixed size.
-                # But let's try raw chunk first.
-                
-                # Note: Some devices expect the Report ID to be prepended if it's not 0.
-                # Assuming Report ID 0.
-                
+            for offset in range(0, len(data), chunk_size):
+                chunk = data[offset:offset + chunk_size]
+                _LOGGER.debug("USB TX ctrl: %s %r", chunk.hex(), chunk)
                 try:
-                    self.dev.ctrl_transfer(0x21, 0x09, 0x200, 0, chunk, self.timeout)
+                    self.dev.ctrl_transfer(0x21, 0x09, 0x200, self.interface_number or 0, chunk, self.timeout)
                 except usb.core.USBError as e:
-                    _LOGGER.error(f"Control transfer failed: {e}")
+                    _LOGGER.error("Control transfer failed: %s", e)
                     raise e
-                    
-                offset += chunk_size
-                time.sleep(0.01)
+                time.sleep(0.02)
 
     def read_until(self, terminator=b'\r') -> bytes:
         if not self.ep_in:
             return b""
-            
+
         res = b""
         start = time.time()
         timeout_sec = self.timeout / 1000.0
-        
+
         while (time.time() - start) < timeout_sec:
             try:
-                # Read 8 bytes (max packet size) with short timeout (100ms)
-                # This prevents blocking for full timeout if buffer isn't full
-                data = self.ep_in.read(8, 200)
-                res += bytes(data)
+                data = bytes(self.ep_in.read(8, 500))
+                _LOGGER.debug("USB RX packet: %s %r", data.hex(), data)
+                res += data
                 if terminator in res:
                     break
             except usb.core.USBError as e:
-                if e.errno == 110: # Timeout
+                if e.errno == 110:
                     continue
-                # If "No data available" or other non-fatal error, continue
-                # _LOGGER.debug(f"USB Read Error: {e}")
-                continue
-                
+                _LOGGER.debug("USB read error: %s", e)
+                break
+
+        _LOGGER.debug("USB RX all: %s %r", res.hex(), res)
         return res
 
     def reset_input_buffer(self):
-        pass
+        if not self.ep_in:
+            return
+        while True:
+            try:
+                data = bytes(self.ep_in.read(8, 50))
+                _LOGGER.debug("USB drain RX: %s %r", data.hex(), data)
+            except usb.core.USBError:
+                break
 
     def reset_output_buffer(self):
         pass
@@ -173,8 +180,6 @@ class AxpertInverter:
         low = crc & 0xFF
         high = (crc >> 8) & 0xFF
 
-        # Fix for control characters in CRC (from Voltronic protocol)
-        # If CRC bytes match ( (0x28), CR (0x0d), LF (0x0a), increment them
         if low in (0x28, 0x0d, 0x0a):
             low += 1
         
@@ -186,132 +191,89 @@ class AxpertInverter:
     def send_command(self, command: str) -> str:
         """Send a command to the inverter and return the response."""
         with self._lock:
-            # Ensure at least 500ms between commands
             time_since_last = time.time() - self._last_command_time
             if time_since_last < 0.5:
                 time.sleep(0.5 - time_since_last)
 
             for attempt in range(2):
                 try:
-                    # Open USB device
-                    
-                    # NOTE: We ignore device_path and look for VID:PID 0665:5161
                     with USBConnection(timeout=5000) as ser:
-                        # Prepare command
                         crc = self._get_crc(command)
                         full_command = command.encode() + crc + b'\r'
                         
-                        _LOGGER.debug(f'Sending command: {command} ({full_command})')
+                        _LOGGER.debug("Sending command: %s (%s %r)", command, full_command.hex(), full_command)
                         
-                        # Flush buffers
                         ser.reset_input_buffer()
                         ser.reset_output_buffer()
-                        
-                        # Write
                         ser.write(full_command)
-                        
-                        # Read response until CR
-                        # This handles the loop and timeout automatically
                         response = ser.read_until(b'\r')
                     
                     if not response:
                         raise Exception("No response from inverter")
     
-                    # Process response bytes (before decoding)
-                    # Strip trailing CR
                     if response.endswith(b'\r'):
                         response = response[:-1]
                     
-                    # Check for ACK/NAK (simple cases)
                     if response == b'(ACK' or response == b'ACK':
                         return 'ACK'
                     if response == b'(NAK' or response == b'NAK':
                         if attempt == 0:
-                            _LOGGER.warning(f"Got NAK for command {command}, retrying in 1s...")
+                            _LOGGER.warning("Got NAK for command %s, retrying in 1s...", command)
                             time.sleep(1)
                             continue
                         raise Exception(f"Command \"{command}\" not supported")
 
-                    # Extract CRC and Data
-                    # Format: (DATA<CRC>
-                    # CRC is last 2 bytes
-                    
-                    # Valid characters in response: A-Z, 0-9, space, ., -, (, :
-                    # We use this to help separate CRC from data if there is trailing garbage
                     valid_chars = set(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 (.-:")
                     
                     if len(response) > 2:
-                        # Strategy 1: Standard Split (Last 2 bytes are CRC)
                         std_data = response[:-2]
                         std_crc_received = response[-2:]
                         std_crc_calc = self._get_crc(std_data)
                         
                         if std_crc_calc == std_crc_received:
-                            # Perfect match, use it
                             raw_data = std_data
                         else:
-                            # Strategy 2: Smart Scan
-                            # Check if the standard split failed because of trailing garbage?
-                            # Or because of corruption?
-                            # We scan for a valid data prefix that checksums correctly.
-                            
                             found_smart = False
-                            # We iterate backwards from len-2 down to 0? Or forwards?
-                            # Usually data is long, garbage is short.
-                            # But valid chars might mask CRC. 
-                            # Let's check prefixes that consist ONLY of valid chars.
-                            
-                            # Optimized scan: Only check split points where data bytes are all valid
-                            # But checking all bytes repeatedly is slow.
-                            # Just check if std_data was all valid. If so, and CRC failed, maybe actual data is shorter?
-                            # Scan from length 1 to len-2
-                            
                             for i in range(len(response)-2, 0, -1):
                                 candidate_data = response[:i]
-                                # Check if ALL chars in candidate are valid
-                                # This filter is crucial to avoid matching random binary data
                                 if all(b in valid_chars for b in candidate_data):
                                     candidate_crc = response[i:i+2]
                                     if self._get_crc(candidate_data) == candidate_crc:
-                                        # Found a match!
-                                        _LOGGER.debug(f"Smart CRC scan recovered data for {command}. Garbage detected at end of response.")
+                                        _LOGGER.debug("Smart CRC scan recovered data for %s. Garbage detected at end of response.", command)
                                         raw_data = candidate_data
                                         found_smart = True
                                         break
                                         
                             if not found_smart:
-                                _LOGGER.warning(f"CRC mismatch for {command}: Recv {std_crc_received.hex()} vs Calc {std_crc_calc.hex()}. Smart scan failed to recover.")
-                                # Fallback to standard split even if invalid, as we can't do better
+                                _LOGGER.warning(
+                                    "CRC mismatch for %s: Recv %s vs Calc %s. Raw=%s %r",
+                                    command,
+                                    std_crc_received.hex(),
+                                    std_crc_calc.hex(),
+                                    response.hex(),
+                                    response,
+                                )
                                 raw_data = std_data
-
                     else:
                         raw_data = response
 
                     try:
-                        # Decode with ignore to handle garbage bytes
                         decoded_response = raw_data.decode('iso-8859-1', errors='ignore')
-                        
-                        # Strip null bytes and whitespace (if any left)
                         decoded_response = decoded_response.replace('\x00', '').strip()
                     except Exception:
                         decoded_response = raw_data.decode('utf-8', errors='ignore').replace('\x00', '').strip()
 
-                    # Find the start of the response (usually '(')
                     if '(' in decoded_response:
                         decoded_response = decoded_response[decoded_response.find('(')+1:]
 
-                    _LOGGER.debug(f'Response from inverter: {decoded_response}')
-                    
+                    _LOGGER.debug("Response from inverter for %s: %s", command, decoded_response)
                     return decoded_response
     
                 except Exception as e:
                     if attempt == 1:
-                        _LOGGER.error(f"Failed to communicate with inverter after retries: {e}")
+                        _LOGGER.error("Failed to communicate with inverter after retries: %s", e)
                         raise e
-                    else:
-                        _LOGGER.warning(f"Failed to communicate with inverter: {e}")
-                    
-                    # Wait a bit before retry
+                    _LOGGER.warning("Failed to communicate with inverter: %s", e)
                     time.sleep(0.5)
                 finally:
                     self._last_command_time = time.time()
@@ -319,14 +281,11 @@ class AxpertInverter:
     def get_general_status(self) -> dict:
         """Get general status parameters (QPIGS)."""
         raw = self.send_command("QPIGS")
-        # Log raw response for debugging if parsing fails
         if not raw:
              return {}
 
-        # Example from user log cleaned: 
-        # 000.0 00.0 230.0 50.0 0046 0002 000 371 53.20 001 080 0026 0001 089.9 53.13 00000 00110110 ...
         parts = raw.split()
-        if len(parts) < 16: # Need at least up to status
+        if len(parts) < 16:
             _LOGGER.warning(f"QPIGS response too short: {raw}")
             return {}
         
@@ -339,29 +298,19 @@ class AxpertInverter:
                 "ac_output_apparent_power": int(parts[4]),
                 "ac_output_active_power": int(parts[5]),
                 "output_load_percent": int(parts[6]),
-                "bus_voltage": int(parts[7]), # 371 (likely Bus Voltage)
-                "battery_voltage": float(parts[8]), # 53.20
-                "battery_charging_current": int(parts[9]), # 001
-                "battery_capacity": int(parts[10]), # 080
-                "heat_sink_temperature": int(parts[11]), # 0026 (Wait, 0026 is 26 deg?)
-                "pv_input_current": float(parts[12]), # 0001 -> This might be 1A or a different scaling?
-                # User log: 0001. Usually PV current is XXX or XX.X
-                # If it is 0001, it is likely 1 Amp.
-                
-                "pv_input_voltage": float(parts[13]), # 089.9
-                "scc_voltage": float(parts[14]), # 53.13
-                "battery_discharge_current": int(parts[15]), # 00000
-                "status_binary": parts[16], # 00110110
+                "bus_voltage": int(parts[7]),
+                "battery_voltage": float(parts[8]),
+                "battery_charging_current": int(parts[9]),
+                "battery_capacity": int(parts[10]),
+                "heat_sink_temperature": int(parts[11]),
+                "pv_input_current": float(parts[12]),
+                "pv_input_voltage": float(parts[13]),
+                "scc_voltage": float(parts[14]),
+                "battery_discharge_current": int(parts[15]),
+                "status_binary": parts[16],
             }
             
-            # Additional fields (not present in all firmwares)
-            # ... QQ VV MMMMM ...
-            # 17: Battery voltage offset?
-            # 18: EEPROM version?
-            # 19: PV Charging Power (MMMMM)
-            
-            if len(parts) > 16:
-                # Supports extended QPIGS
+            if len(parts) > 19:
                 data["pv_charging_power"] = int(parts[19])
             
             return data
@@ -379,7 +328,6 @@ class AxpertInverter:
 
     def get_mode(self) -> str:
         """Get Device Mode (QMOD)."""
-        # Response: (M<CRC><cr>  where M is P, S, L, B, F, H, D
         return self.send_command("QMOD")
 
     def get_device_id(self) -> str:
@@ -403,11 +351,6 @@ class AxpertInverter:
              return {}
 
         try:
-            # According to docs:
-            # ...
-            # 16: Output Source Priority (0:Utility, 1:Solar, 2:SBU)
-            # 17: Charger Source Priority (0:Utility, 1:Solar, 2:Solar+Utility, 3:Only Solar)
-            
             data = {}
             if len(parts) > 16:
                 data["output_source_priority"] = parts[16]
@@ -415,16 +358,6 @@ class AxpertInverter:
             if len(parts) > 17:
                 data["charger_source_priority"] = parts[17]
 
-            # Additional fields based on indices relative to priorities
-            # 8: Nom V
-            # 9: Cutoff V
-            # 10: Bulk V
-            # 11: Float V
-            # 12: Battery Type (0:AGM, 1:Flooded, 2:User)
-            # 13: Max AC Charging Current
-            # 14: Max Total Charging Current
-            # 15: Input Voltage Range (0:Appliance, 1:UPS)
-            
             if len(parts) > 9:
                 data["battery_cutoff_voltage"] = float(parts[9])
             
@@ -456,17 +389,14 @@ class AxpertInverter:
 
     def set_output_source_priority(self, priority: str) -> bool:
         """Set Output Source Priority. 00/01/02."""
-        # POP00, POP01, POP02
         return "ACK" in self.send_command(f"POP{priority}")
 
     def set_charger_source_priority(self, priority: str) -> bool:
         """Set Charger Source Priority. 00/01/02/03."""
-        # PCP00, PCP01, PCP02, PCP03
         return "ACK" in self.send_command(f"PCP{priority}")
     
     def set_max_charging_current(self, current: int) -> bool:
         """Set Max Charging Current. MNCHGC<nnn>."""
-        # Current usually padded to 3 digits like 060
         cmd = f"MNCHGC{current:03}"
         return "ACK" in self.send_command(cmd)
 
@@ -497,7 +427,6 @@ class AxpertInverter:
 
     def get_firmware_version(self) -> str:
         """Get Main CPU Firmware Version (QVFW)."""
-        # Response: (VERFW:XXXXX.XX<CRC><cr> or just (VERFW:00052.30
         try:
             raw = self.send_command("QVFW")
             if "VERFW:" in raw:
@@ -518,12 +447,7 @@ class AxpertInverter:
         try:
             raw = self.get_model_id()
             if not raw: return None
-            
-            # Raw response is usually (NNN, e.g., (001.
-            # Clean it up
             code = raw.replace('(', '').strip()
-            
-            # Mapping from protocol documentation
             mapping = {
                 "001": "VP-5000",
                 "002": "VM-5000",
@@ -571,7 +495,6 @@ class AxpertInverter:
                 "044": "MAX 7.2K",
                 "045": "MAX 5K LV",
             }
-            
             return mapping.get(code, code)
         except Exception:
             return None
